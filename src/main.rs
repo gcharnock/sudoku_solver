@@ -1,11 +1,5 @@
 #![allow(dead_code)]
 
-use std::{
-    collections::{HashMap, VecDeque},
-    num::{NonZeroI64, NonZeroU64},
-    thread::panicking,
-};
-
 mod coords {
     use crate::{col::Col, row::Row, segment::Segment};
 
@@ -417,7 +411,7 @@ impl GBoard<NSet> {
         Self([NSet::full(); 81])
     }
 
-    fn is_solved(&self) -> bool {
+    fn is_full(&self) -> bool {
         for cell in self.0.iter() {
             if cell.len() != 1 {
                 return false;
@@ -489,97 +483,127 @@ impl GBoard<NSet> {
     }
 }
 
+#[derive(Debug)]
+enum StepResult {
+    Solved(Box<Board>),
+    Unsolved,
+    Falsified,
+    Stuck,
+}
+
 struct Solver {
-    boards: HashMap<NonZeroU64, LogicStep>,
-    queue: VecDeque<NonZeroU64>,
-    next_id: NonZeroU64,
+    tree: LogicStep,
 }
 
 impl Solver {
     fn new(starting: Board) -> Self {
         let board_facts = BoardFacts::from_board(&starting);
-        let starting_step = LogicStep {
-            parent: None,
+        let starting_step = LogicStep::new(board_facts, None);
+
+        Self {
+            tree: starting_step,
+        }
+    }
+
+    fn step(&mut self) -> StepResult {
+        if self.tree.active {
+            self.tree.board.to_board().print_board();
+        }
+        self.tree.do_step()
+    }
+}
+
+struct LogicStep {
+    board: BoardFacts,
+    conjecture: Option<Conjecture>,
+    children: Vec<LogicStep>,
+    active: bool,
+    step_count: u32,
+}
+
+impl LogicStep {
+    fn new(board: BoardFacts, conjecture: Option<Conjecture>) -> Self {
+        Self {
+            board,
+            conjecture,
             children: Vec::new(),
-            board: board_facts,
-            conjecture: None,
             active: true,
-        };
-        let mut myself = Self {
-            boards: HashMap::new(),
-            queue: VecDeque::new(),
-            next_id: NonZeroU64::try_from(1).unwrap(),
-        };
-        myself.add_step(starting_step);
-        myself
-    }
-
-    fn add_step(&mut self, step: LogicStep) -> NonZeroU64 {
-        let id = self.next_id;
-        self.boards.insert(id, step);
-        self.next_id = self.get_next_id();
-        self.queue.push_back(id);
-        id
-    }
-
-    fn step(&mut self) -> bool {
-        let this_id = self.queue.pop_front().unwrap();
-        let mut step = self.boards.remove(&this_id).unwrap();
-        if step.parent.is_none() {
-            println!("current state:");
-            step.board.to_board().print_board();
+            step_count: 0,
         }
-        loop {
-            if !step.board.to_board().valid() {
-                let parent_id = step.parent.clone().unwrap();
-                let parent_step = self.boards.get_mut(&parent_id).unwrap();
-                //println!("Falseified {:?}", step.conjecture);
-                match step.conjecture.as_ref().unwrap() {
-                    Conjecture::NumberIsAtPosition(n, c) => {
-                        parent_step.board.get_mut(*c).unset(*n);
-                        if parent_step.active == false {
-                            parent_step.active = true;
-                            self.queue.push_back(parent_id);
-                        }
-                    }
-                }
-                return false;
-            }
+    }
 
-            if let Some(new_facts) = Self::try_to_learn_something(&step.board) {
-                step.board = new_facts
-            } else {
-                if step.board.is_solved() {
-                    let solution = step.board.to_board();
-                    println!("Board is solved (valid = {})", solution.valid());
-                    solution.print_board();
-                    return true;
+    fn do_step(&mut self) -> StepResult {
+        self.step_count += 1;
+        if !self.active {
+            self.children.sort_by(|a, b| a.step_count.cmp(&b.step_count));
+            for child in self.children.iter_mut() {
+                let result = child.do_step();
+                match result {
+                    StepResult::Solved(b) => return StepResult::Solved(b),
+                    StepResult::Unsolved => return StepResult::Unsolved,
+                    StepResult::Falsified => {
+                        self.active = true;
+                        match child.conjecture.as_ref().unwrap() {
+                            Conjecture::NumberIsAtPosition(n, c) => {
+                                assert!(self.board.at(*c).is_set(*n));
+                                self.board.get_mut(*c).unset(*n)
+                            }
+                        }
+                        self.children = Vec::new();
+                        return StepResult::Unsolved;
+                    }
+                    StepResult::Stuck => continue,
+                }
+            }
+            return StepResult::Stuck
+        } else {
+            if !self.board.to_board().valid() {
+                return StepResult::Falsified;
+            }
+            if self.board.is_full() {
+                return StepResult::Solved(Box::new(self.board.to_board()));
+            }
+            self.active = false;
+
+            for c in Coord::all() {
+                for n in self.board.at(c).items() {
+                    let conjecture = Conjecture::NumberIsAtPosition(n, c);
+                    let mut new_board = self.board.clone();
+                    new_board.set(c, NSet::singleton(n));
+                    let new_step = LogicStep::new(new_board, Some(conjecture));
+                    self.children.push(new_step);
+                }
+            }
+            return StepResult::Unsolved;
+
+            /*while let Some(new_facts) = Self::try_to_learn_something(&self.board) {
+                if !self.board.to_board().valid() {
+                    return StepResult::Falsified;
+                }
+                self.board = new_facts
+            }
+            if self.board.is_full() {
+                let solution = self.board.to_board();
+                if solution.valid() {
+                    return StepResult::Solved(Box::new(solution));
                 } else {
-                    step.active = false;
-
-                    for c in Coord::all() {
-                        for n in step.board.at(c).items() {
-                            let mut conjecture = step.board.clone();
-                            conjecture.set(c, NSet::singleton(n));
-                            let new_step = LogicStep {
-                                parent: Some(this_id),
-                                children: Vec::new(),
-                                board: conjecture,
-                                conjecture: Some(Conjecture::NumberIsAtPosition(n, c)),
-                                active: true,
-                            };
-                            self.add_step(new_step);
-                        }
-                    }
-                    self.boards.insert(this_id, step);
-                    return false;
+                    return StepResult::Falsified;
                 }
-            }
-        }
-    }
+            } else {
+                self.active = false;
 
-    fn get_next_id(&mut self) -> NonZeroU64 {
-        NonZeroU64::try_from(self.next_id.get() + 1).unwrap()
+                for c in Coord::all() {
+                    for n in self.board.at(c).items() {
+                        let conjecture = Conjecture::NumberIsAtPosition(n, c);
+                        let mut new_board = self.board.clone();
+                        new_board.set(c, NSet::singleton(n));
+                        let new_step = LogicStep::new(new_board, Some(conjecture));
+                        self.children.push(new_step);
+                    }
+                }
+                return StepResult::Unsolved;
+            }*/
+        }
     }
 
     fn try_to_learn_something(board: &BoardFacts) -> Option<BoardFacts> {
@@ -594,14 +618,9 @@ impl Solver {
                 match board.is_number_at_position_contradicts_other_known_number(coord, possible_n)
                 {
                     Judgement::Contradiction => {
-                        //println!("{possible_n} cannot go at {coord:?}");
                         let mut new_board = board.clone();
                         let n_set = new_board.get_mut(coord);
                         n_set.unset(possible_n);
-                        //if let Some(n) = n_set.get_singleton() {
-                        //    println!("know that number at {coord:?} must be a {n}");
-                        //    //new_board.to_board().print_board();
-                        //}
                         return Some(new_board);
                     }
                     Judgement::Unknown => {}
@@ -610,14 +629,6 @@ impl Solver {
         }
         None
     }
-}
-
-struct LogicStep {
-    parent: Option<NonZeroU64>,
-    children: Vec<NonZeroU64>,
-    board: BoardFacts,
-    conjecture: Option<Conjecture>,
-    active: bool,
 }
 
 #[derive(Debug)]
@@ -646,11 +657,9 @@ fn web_sudoku_evil() -> Board {
         &[" 54", "  2", " 8 "],
         &["63 ", " 8 ", "   "],
         &["9  ", " 5 ", "7  "],
-
         &[" 4 ", "3  ", "  7"],
         &[" 7 ", "   ", " 5 "],
         &["2  ", "  8", " 1 "],
-
         &["  9", " 1 ", "   "],
         &["   ", " 3 ", " 25"],
         &[" 2 ", "9  ", "87 "],
@@ -659,10 +668,27 @@ fn web_sudoku_evil() -> Board {
     b
 }
 
-
 fn main() {
-    let problem = web_sudoku_evil();
+    let problem = web_sudoku_easy();
     problem.print_board();
     let mut solver = Solver::new(problem);
-    while !solver.step() {}
+    loop {
+        match solver.step() {
+            StepResult::Solved(solution) => {
+                assert!(solution.valid());
+                println!("Got solution");
+                solution.print_board();
+                break;
+            }
+            StepResult::Unsolved => continue,
+            StepResult::Falsified => {
+                println!("There is no solution");
+                break;
+            }
+            StepResult::Stuck => {
+                println!("Solver got stuck");
+                break;
+            }
+        }
+    }
 }
