@@ -144,6 +144,10 @@ impl NSet {
         self.0.count_ones()
     }
 
+    fn intersection(&self, other: &NSet) -> NSet {
+        return NSet(self.0 | other.0)
+    }
+
     fn get_singleton(&self) -> Option<u8> {
         if self.0.count_ones() == 1 {
             let mut x = self.0;
@@ -434,9 +438,7 @@ impl GBoard<NSet> {
         let mut facts = Self::maximally_unknown();
         for coord in Coord::all() {
             if board.at(coord) > 0 {
-                let mut known = NSet::empty();
-                known.set(board.at(coord));
-                facts.set(coord, known)
+                facts.set(coord, NSet::singleton(board.at(coord)))
             };
         }
         facts
@@ -481,6 +483,43 @@ impl GBoard<NSet> {
         }
         Judgement::Unknown
     }
+
+    fn valid(&self) -> bool {
+        for c in Coord::all() {
+            if self.at(c).len() == 0 {
+                return false;
+            }
+        }
+        for segment in Segment::all() {
+            let mut set = NSet::empty();
+            for c in segment.coords() {
+                set = set.intersection(&self.at(c));
+            }
+            if set.len() < 9 {
+                return false;
+            }
+        }
+        for row in Row::all() {
+            let mut set = NSet::empty();
+            for c in row.coords() {
+                set = set.intersection(&self.at(c));
+            }
+            if set.len() < 9 {
+                return false;
+            }
+        }
+        for col in Col::all() {
+            let mut set = NSet::empty();
+            for c in col.coords() {
+                set = set.intersection(&self.at(c));
+            }
+            if set.len() < 9 {
+                return false;
+            }
+        }
+        let board = self.to_board();
+        board.valid()
+    }
 }
 
 #[derive(Debug)]
@@ -507,7 +546,8 @@ impl Solver {
 
     fn step(&mut self) -> StepResult {
         if self.tree.active {
-            self.tree.board.to_board().print_board();
+            let board = self.tree.board.to_board();
+            board.print_board();
         }
         self.tree.do_step()
     }
@@ -557,7 +597,7 @@ impl LogicStep {
             }
             return StepResult::Stuck
         } else {
-            if !self.board.to_board().valid() {
+            if !self.board.valid() {
                 return StepResult::Falsified;
             }
             if self.board.is_full() {
@@ -653,6 +693,7 @@ fn web_sudoku_easy() -> Board {
 }
 
 fn web_sudoku_evil() -> Board {
+    // This one might well be unsolvable
     let b = Board::from_rep(&[
         &[" 54", "  2", " 8 "],
         &["63 ", " 8 ", "   "],
@@ -668,8 +709,46 @@ fn web_sudoku_evil() -> Board {
     b
 }
 
+
+fn sudoku_solver_dot_com_hard() -> Board {
+    // This one might well be unsolvable
+    let b = Board::from_rep(&[
+        &["7  ", "  6", "  8"],
+        &["  9", "  2", " 4 "],
+        &["2  ", "71 ", "   "],
+
+        &["47 ", "1 9", " 5 "],
+        &["   ", "   ", "   "],
+        &[" 6 ", "4 5", " 12"],
+
+        &["   ", " 51", "  4"],
+        &[" 4 ", "2  ", "3  "],
+        &["9  ", "8  ", "  6"],
+    ]);
+    assert!(b.valid());
+    b
+}
+
+fn unsolvable() -> Board {
+    let b = Board::from_rep(&[
+        &["1  ", "   ", "234"],
+        &["   ", " 1 ", "  5"],
+        &["   ", "   ", "  6"],
+
+        &["   ", "   ", "1  "],
+        &["   ", "   ", "   "],
+        &["   ", "   ", "   "],
+
+        &["   ", "   ", "   "],
+        &["   ", "   ", " 1 "],
+        &["   ", "   ", "   "],
+    ]);
+    assert!(b.valid());
+    b
+}
+
 fn main() {
-    let problem = web_sudoku_easy();
+    let problem = sudoku_solver_dot_com_hard();
     problem.print_board();
     let mut solver = Solver::new(problem);
     loop {
