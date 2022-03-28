@@ -532,6 +532,7 @@ enum StepResult {
 
 struct Solver {
     tree: LogicStep,
+    step_count: u64
 }
 
 impl Solver {
@@ -541,13 +542,16 @@ impl Solver {
 
         Self {
             tree: starting_step,
+            step_count: 0
         }
     }
 
     fn step(&mut self) -> StepResult {
+        self.step_count += 1;
         if self.tree.active {
             let board = self.tree.board.to_board();
             board.print_board();
+            println!("step count is now {}", self.step_count);
         }
         self.tree.do_step()
     }
@@ -755,7 +759,7 @@ fn main() {
         match solver.step() {
             StepResult::Solved(solution) => {
                 assert!(solution.valid());
-                println!("Got solution");
+                println!("Got solution, step count was {}", solver.step_count);
                 solution.print_board();
                 break;
             }
